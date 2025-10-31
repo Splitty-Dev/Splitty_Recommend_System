@@ -440,8 +440,18 @@ def recommend_items_with_filter(request: RecommendRequest):
                     available_items=request.available_items
                 )
                 
+                # 간단한 응답 형태로 변환
+                simple_recommendations = [
+                    {
+                        "item_id": rec["item_id"],
+                        "rank": rec["rank"]
+                    }
+                    for rec in recommendations
+                ]
+                
                 return {
-                    "recommendations": recommendations
+                    "user_id": request.user_id,
+                    "items": simple_recommendations
                 }
                 
             except Exception as hybrid_error:
@@ -463,8 +473,18 @@ def recommend_items_with_filter(request: RecommendRequest):
             ]
             recommendations = recommendations[:request.top_n]
         
+        # 간단한 응답 형태로 변환
+        simple_recommendations = [
+            {
+                "item_id": rec.get("item_id", ""),
+                "rank": i + 1
+            }
+            for i, rec in enumerate(recommendations)
+        ]
+        
         return {
-            "recommendations": recommendations
+            "user_id": request.user_id,
+            "items": simple_recommendations
         }
         
     except Exception as e:
@@ -538,4 +558,4 @@ async def startup_event():
 if __name__ == "__main__":
     import uvicorn
     print("추천 시스템 서버를 시작합니다...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
