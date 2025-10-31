@@ -440,17 +440,15 @@ class MatrixFactorization:
 class TwoTowerModel(nn.Module):
     """
     Two-Tower Neural Network for Personalized Ranking
-    사용자 타워와 아이템 타워로 구성된 딥러닝 모델 (제목 임베딩 포함)
+    사용자 타워와 아이템 타워로 구성된 딥러닝 모델
     """
     
     def __init__(self, n_users: int, n_items: int, n_categories: int, 
-                 embedding_dim: int = 64, hidden_dims: List[int] = [128, 64],
-                 title_embedding_dim: int = 768):
+                 embedding_dim: int = 64, hidden_dims: List[int] = [128, 64]):
         super(TwoTowerModel, self).__init__()
         
         self.embedding_dim = embedding_dim
         self.hidden_dims = hidden_dims
-        self.title_embedding_dim = title_embedding_dim
         
         # User Tower
         self.user_embedding = nn.Embedding(n_users, embedding_dim)
@@ -458,13 +456,6 @@ class TwoTowerModel(nn.Module):
         # Item Tower  
         self.item_embedding = nn.Embedding(n_items, embedding_dim)
         self.category_embedding = nn.Embedding(n_categories, embedding_dim // 2)
-        
-        # 제목 임베딩 차원 축소 (768 → 64)
-        self.title_projection = nn.Sequential(
-            nn.Linear(title_embedding_dim, embedding_dim),
-            nn.ReLU(),
-            nn.Dropout(0.1)
-        )
         
         # User Tower의 FC layers
         user_layers = []
@@ -478,9 +469,9 @@ class TwoTowerModel(nn.Module):
             input_dim = hidden_dim
         self.user_tower = nn.Sequential(*user_layers)
         
-        # Item Tower의 FC layers (제목 임베딩 포함)
+        # Item Tower의 FC layers
         item_layers = []
-        input_dim = embedding_dim + (embedding_dim // 2) + embedding_dim + 1  # item_emb + category_emb + title_emb + price_norm
+        input_dim = embedding_dim + (embedding_dim // 2) + 1  # item_emb + category_emb + price_norm
         for hidden_dim in hidden_dims:
             item_layers.extend([
                 nn.Linear(input_dim, hidden_dim),
@@ -493,7 +484,7 @@ class TwoTowerModel(nn.Module):
         # Final output layer
         self.output_layer = nn.Linear(1, 1)
         
-    def forward(self, user_ids, item_ids, category_ids, price_norm, title_embeddings=None):
+    def forward(self, user_ids, item_ids, category_ids, price_norm):
         # User Tower
         user_emb = self.user_embedding(user_ids)
         user_features = self.user_tower(user_emb)
@@ -503,14 +494,7 @@ class TwoTowerModel(nn.Module):
         category_emb = self.category_embedding(category_ids)
         price_norm = price_norm.unsqueeze(1) if price_norm.dim() == 1 else price_norm
         
-        # 제목 임베딩 처리
-        if title_embeddings is not None:
-            title_emb = self.title_projection(title_embeddings)
-        else:
-            # 제목 임베딩이 없는 경우 영벡터 사용
-            title_emb = torch.zeros(item_emb.shape[0], self.embedding_dim, device=item_emb.device)
-        
-        item_input = torch.cat([item_emb, category_emb, title_emb, price_norm], dim=1)
+        item_input = torch.cat([item_emb, category_emb, price_norm], dim=1)
         item_features = self.item_tower(item_input)
         
         # Interaction (dot product)
@@ -522,7 +506,7 @@ class TwoTowerModel(nn.Module):
 
 class TwoTowerTrainer:
     """
-    Two-Tower 모델 학습 및 추론을 위한 클래스 (제목 임베딩 포함)
+    Two-Tower 모델 학습 및 추론을 위한 클래스
     """
     
     def __init__(self, model: TwoTowerModel, device: str = 'cpu'):
@@ -532,24 +516,6 @@ class TwoTowerTrainer:
         self.user_encoder = {}
         self.item_encoder = {}
         self.category_encoder = {}
-        self.title_embeddings = None
-        
-    def load_title_embeddings(self, data_dir: str):
-        """제목 임베딩 로드"""
-        try:
-            import os
-            embedding_path = os.path.join(data_dir, "item_title_embeddings.npz")
-            if os.path.exists(embedding_path):
-                embeddings_data = np.load(embedding_path)
-                self.title_embeddings = embeddings_data['embeddings']
-                print(f"제목 임베딩 로드 완료: {self.title_embeddings.shape}")
-                return True
-            else:
-                print(f"제목 임베딩 파일을 찾을 수 없습니다: {embedding_path}")
-                return False
-        except Exception as e:
-            print(f"제목 임베딩 로드 실패: {str(e)}")
-            return False
         
     def prepare_encoders(self, df: pd.DataFrame):
         """인코더 준비"""
@@ -564,12 +530,8 @@ class TwoTowerTrainer:
     def fit(self, train_df: pd.DataFrame, val_df: pd.DataFrame = None, 
             epochs: int = 50, batch_size: int = 1024, lr: float = 0.001,
             data_dir: str = None):
-        """모델 학습 (제목 임베딩 포함)"""
-        print("Two-Tower 모델 학습 시작 (제목 임베딩 포함)...")
-        
-        # 제목 임베딩 로드
-        if data_dir:
-            self.load_title_embeddings(data_dir)
+        """모델 학습"""
+        print("Two-Tower 모델 학습 시작...")
         
         self.prepare_encoders(train_df)
         
@@ -584,16 +546,15 @@ class TwoTowerTrainer:
         for epoch in range(epochs):
             total_loss = 0
             for batch in train_loader:
-                user_ids, item_ids, category_ids, price_norm, labels, title_embs = batch
+                user_ids, item_ids, category_ids, price_norm, labels = batch
                 user_ids = user_ids.to(self.device)
                 item_ids = item_ids.to(self.device)
                 category_ids = category_ids.to(self.device)
                 price_norm = price_norm.to(self.device)
                 labels = labels.to(self.device)
-                title_embs = title_embs.to(self.device) if title_embs is not None else None
                 
                 optimizer.zero_grad()
-                outputs = self.model(user_ids, item_ids, category_ids, price_norm, title_embs)
+                outputs = self.model(user_ids, item_ids, category_ids, price_norm)
                 loss = criterion(outputs, labels.float())
                 loss.backward()
                 optimizer.step()
@@ -607,54 +568,25 @@ class TwoTowerTrainer:
         print("Two-Tower 모델 학습 완료!")
     
     def _prepare_dataset(self, df: pd.DataFrame):
-        """PyTorch Dataset 준비 (제목 임베딩 포함)"""
+        """PyTorch Dataset 준비"""
         user_ids = [self.user_encoder[uid] for uid in df['user_idx']]
         item_ids = [self.item_encoder[iid] for iid in df['item_idx']]
         category_ids = [self.category_encoder[cat] for cat in df['category_idx']]
         price_norm = df['price_norm'].values
         labels = df['label'].values
         
-        # 제목 임베딩 준비
-        title_embeddings = None
-        if self.title_embeddings is not None:
-            # 아이템 ID를 인덱스로 매핑하여 제목 임베딩 추출
-            title_embs = []
-            for item_id in df['item_idx']:
-                item_idx = self.item_encoder[item_id]
-                if item_idx < len(self.title_embeddings):
-                    title_embs.append(self.title_embeddings[item_idx])
-                else:
-                    # 임베딩이 없는 경우 영벡터 사용
-                    title_embs.append(np.zeros(self.title_embeddings.shape[1]))
-            title_embeddings = torch.FloatTensor(np.array(title_embs))
-        else:
-            # 제목 임베딩이 없는 경우 None 사용
-            title_embeddings = None
-        
-        if title_embeddings is not None:
-            dataset = torch.utils.data.TensorDataset(
-                torch.LongTensor(user_ids),
-                torch.LongTensor(item_ids), 
-                torch.LongTensor(category_ids),
-                torch.FloatTensor(price_norm),
-                torch.LongTensor(labels),
-                title_embeddings
-            )
-        else:
-            # 제목 임베딩 없이 기존 방식 유지
-            dataset = torch.utils.data.TensorDataset(
-                torch.LongTensor(user_ids),
-                torch.LongTensor(item_ids), 
-                torch.LongTensor(category_ids),
-                torch.FloatTensor(price_norm),
-                torch.LongTensor(labels),
-                torch.zeros(len(user_ids), 768)  # 더미 제목 임베딩
-            )
+        dataset = torch.utils.data.TensorDataset(
+            torch.LongTensor(user_ids),
+            torch.LongTensor(item_ids), 
+            torch.LongTensor(category_ids),
+            torch.FloatTensor(price_norm),
+            torch.LongTensor(labels)
+        )
         return dataset
     
     def predict_scores(self, user_id: str, candidate_items: List[str], 
                       item_meta: pd.DataFrame) -> List[Tuple[str, float]]:
-        """후보 아이템들에 대한 예측 점수 계산 (제목 임베딩 포함)"""
+        """후보 아이템들에 대한 예측 점수 계산"""
         if user_id not in self.user_encoder:
             # 새 사용자인 경우 랜덤 점수 (또는 다른 전략)
             return [(item_id, np.random.random()) for item_id in candidate_items]
@@ -684,11 +616,6 @@ class TwoTowerTrainer:
                 
                 category_idx = self.category_encoder[category]
                 
-                # 제목 임베딩 가져오기
-                title_emb = None
-                if self.title_embeddings is not None and item_idx < len(self.title_embeddings):
-                    title_emb = torch.FloatTensor(self.title_embeddings[item_idx]).unsqueeze(0).to(self.device)
-                
                 # 텐서 생성
                 user_tensor = torch.LongTensor([user_idx]).to(self.device)
                 item_tensor = torch.LongTensor([item_idx]).to(self.device)
@@ -696,7 +623,7 @@ class TwoTowerTrainer:
                 price_tensor = torch.FloatTensor([price_norm]).to(self.device)
                 
                 # 예측
-                score = self.model(user_tensor, item_tensor, category_tensor, price_tensor, title_emb)
+                score = self.model(user_tensor, item_tensor, category_tensor, price_tensor)
                 scored_items.append((item_id, float(score.cpu().numpy())))
         
         # 점수 기준 정렬

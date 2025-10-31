@@ -62,8 +62,6 @@ class HybridRecommender:
         meta_cols = ['item_idx', 'category_idx']
         if 'price_norm' in available_cols:
             meta_cols.append('price_norm')
-        if 'title_emb' in available_cols:
-            meta_cols.append('title_emb')
         
         self.item_meta = self.train_data[meta_cols].drop_duplicates()
         print(f"아이템 메타데이터 준비 완료: {len(self.item_meta)} 개 아이템")
@@ -109,16 +107,11 @@ class HybridRecommender:
         
         self.two_tower_trainer = TwoTowerTrainer(two_tower_model, device=self.device)
         
-        # 학습 실행 (제목 임베딩 포함)
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(current_dir)
-        data_path = os.path.join(project_root, "data", "splitty_recommendation_data_1")
-        
+        # 학습 실행
         self.two_tower_trainer.fit(
             train_df=self.train_data,
             epochs=epochs,
-            batch_size=batch_size,
-            data_dir=data_path
+            batch_size=batch_size
         )
         
         self.is_trained = True
