@@ -35,6 +35,53 @@ data_loaded = False
 hybrid_recommender = None
 hybrid_model_loaded = False
 
+def simplify_response(recommendations: List[Dict]) -> List[Dict]:
+    """추천 결과를 item_id와 rank만 포함하도록 간소화"""
+    return [
+        {
+            "item_id": rec.get("item_id"),
+            "rank": rec.get("rank", i + 1)
+        }
+        for i, rec in enumerate(recommendations)
+    ]
+
+def check_user_exists(user_id: str) -> bool:
+    """사용자가 학습 데이터에 존재하는지 확인"""
+    try:
+        if hybrid_model_loaded and hybrid_recommender:
+            # train_data에서 사용자 존재 확인 (user_idx 컬럼 사용)
+            if hybrid_recommender.train_data is not None:
+                return user_id in hybrid_recommender.train_data['user_idx'].astype(str).values
+        
+        # 폴백: 기존 데이터에서 확인
+        if data_loaded and user_item_test is not None:
+            if 'user_id' in user_item_test.columns:
+                return user_id in user_item_test['user_id'].astype(str).values
+            elif 'user_idx' in user_item_test.columns:
+                return user_id in user_item_test['user_idx'].astype(str).values
+        
+        return False
+    except Exception as e:
+        print(f"사용자 확인 중 오류: {str(e)}")
+        return False
+
+def get_popular_recommendations_internal(top_n: int, category_filter: Optional[str] = None, available_items: Optional[List[int]] = None) -> List[Dict]:
+    """내부용 인기 아이템 추천 함수"""
+    try:
+        if hybrid_model_loaded and hybrid_recommender:
+            recommendations = hybrid_recommender.get_popular_recommendations(
+                top_n=top_n,
+                category_filter=category_filter,
+                available_items=available_items
+            )
+            return simplify_response(recommendations)
+        
+        # 폴백: 빈 리스트 반환
+        return []
+    except Exception as e:
+        print(f"인기 아이템 추천 오류: {str(e)}")
+        return []
+
 def load_hybrid_recommender():
     """하이브리드 추천 시스템을 로드합니다."""
     global hybrid_recommender, hybrid_model_loaded
@@ -385,22 +432,22 @@ def get_popular_items(
         if hybrid_model_loaded and hybrid_recommender:
             recommendations = hybrid_recommender.get_popular_recommendations(top_n=top_n)
             
+            # 간결한 응답으로 변환
+            simple_recs = simplify_response(recommendations)
+            
             return {
-                "requested_count": top_n,
-                "actual_count": len(recommendations),
-                "model_type": "hybrid_popular",
-                "recommendations": recommendations,
-                "timestamp": pd.Timestamp.now().isoformat()
+                "user_id": "new_user",
+                "items": simple_recs
             }
         
         # 폴백: 기존 방식
         if not data_loaded:
             load_recommendation_data()
         
-        return {
-            "error": "하이브리드 모델을 사용할 수 없습니다. 기존 방식은 인기 아이템 기능을 지원하지 않습니다.",
-            "timestamp": pd.Timestamp.now().isoformat()
-        }
+        raise HTTPException(
+            status_code=503,
+            detail="추천 시스템을 사용할 수 없습니다."
+        )
         
     except Exception as e:
         raise HTTPException(
@@ -411,9 +458,13 @@ def get_popular_items(
 @app.post("/api/recommend")
 def recommend_items_with_filter(request: RecommendRequest):
     """
-    거리 기반 필터링이 포함된 아이템 추천 API
+    통합 추천 API - 사용자 존재 여부를 자동으로 판단하여 추천
     
-    - **user_id**: 추천을 받을 사용자의 ID
+    - **신규 사용자**: 인기 아이템 추천 (popular items)
+    - **기존 사용자**: 개인화 추천 (personalized hybrid)
+    
+    요청 파라미터:
+    - **user_id**: 추천을 받을 사용자의 ID (필수)
     - **top_n**: 반환할 상위 추천 아이템 개수 (기본값: 50, 최대: 100)
     - **category**: 특정 카테고리로 필터링 (옵션)
     - **available_items**: 거리 내 사용 가능한 아이템 ID 리스트 (옵션)
@@ -421,71 +472,71 @@ def recommend_items_with_filter(request: RecommendRequest):
     예시 요청:
     ```json
     {
-        "user_id": "user123",
+        "user_id": "user_1",
         "top_n": 10,
-        "category": "건강/운동",
+        "category": "식품",
         "available_items": [101, 205, 310, 450, 892]
+    }
+    ```
+    
+    응답 형식:
+    ```json
+    {
+        "user_id": "user_1",
+        "items": [
+            {"item_id": 297, "rank": 1},
+            {"item_id": 418, "rank": 2}
+        ]
     }
     ```
     """
     try:
-        # 하이브리드 모델 시도
-        if hybrid_model_loaded and hybrid_recommender:
-            try:
-                recommendations = hybrid_recommender.get_recommendations(
-                    user_id=request.user_id,
-                    top_k=250, 
-                    top_n=request.top_n,
-                    category_filter=request.category,
-                    available_items=request.available_items
-                )
-                
-                # 간단한 응답 형태로 변환
-                simple_recommendations = [
-                    {
-                        "item_id": rec["item_id"],
-                        "rank": rec["rank"]
+        # 1. 사용자 존재 여부 확인
+        user_exists = check_user_exists(request.user_id)
+        
+        if user_exists:
+            # 2-A. 기존 사용자 → 개인화 추천
+            if hybrid_model_loaded and hybrid_recommender:
+                try:
+                    recommendations = hybrid_recommender.get_recommendations(
+                        user_id=request.user_id,
+                        top_k=250, 
+                        top_n=request.top_n,
+                        category_filter=request.category,
+                        available_items=request.available_items
+                    )
+                    
+                    # 간단한 응답 형태로 변환
+                    simple_recommendations = simplify_response(recommendations)
+                    
+                    return {
+                        "user_id": request.user_id,
+                        "items": simple_recommendations
                     }
-                    for rec in recommendations
-                ]
-                
-                return {
-                    "user_id": request.user_id,
-                    "items": simple_recommendations
-                }
-                
-            except Exception as hybrid_error:
-                print(f"하이브리드 모델 오류: {str(hybrid_error)}")
-                # 기존 모델로 폴백
+                    
+                except Exception as hybrid_error:
+                    print(f"하이브리드 모델 오류: {str(hybrid_error)}")
+                    # 에러 시 인기 아이템으로 폴백
+                    user_exists = False
         
-        # 기존 모델 사용 (available_items 필터링 포함)
-        if not data_loaded:
-            load_recommendation_data()
-        
-        recommendations = get_user_recommendations(request.user_id, request.top_n)
-        
-        # available_items 필터링 적용
-        if request.available_items:
-            available_set = set(request.available_items)
-            recommendations = [
-                rec for rec in recommendations 
-                if rec.get("item_id") in available_set
-            ]
-            recommendations = recommendations[:request.top_n]
-        
-        # 간단한 응답 형태로 변환
-        simple_recommendations = [
-            {
-                "item_id": rec.get("item_id", ""),
-                "rank": i + 1
+        if not user_exists:
+            # 2-B. 신규 사용자 또는 에러 발생 → 인기 아이템 추천
+            popular_items = get_popular_recommendations_internal(
+                top_n=request.top_n,
+                category_filter=request.category,
+                available_items=request.available_items
+            )
+            
+            return {
+                "user_id": request.user_id,
+                "items": popular_items
             }
-            for i, rec in enumerate(recommendations)
-        ]
         
-        return {
-            "user_id": request.user_id,
-            "items": simple_recommendations
-        }
+        # 3. 모든 방법 실패 시
+        raise HTTPException(
+            status_code=503,
+            detail="추천 시스템을 사용할 수 없습니다."
+        )
         
     except Exception as e:
         raise HTTPException(
@@ -496,36 +547,17 @@ def recommend_items_with_filter(request: RecommendRequest):
 @app.post("/api/recommend/location")
 def recommend_items_by_location(request: LocationBasedRequest):
     """
-    위치 기반 아이템 추천 API (향후 확장용)
+    위치 기반 아이템 추천 API
     
-    현재는 region_id 기반으로만 동작하며, 실제 위치 계산은 백엔드에서 처리 후
-    available_items 리스트와 함께 /api/recommend POST API를 사용하는 것을 권장합니다.
+    백엔드에서 available_items를 전달하면 해당 아이템 중에서만 추천합니다.
     """
     try:
-        if request.location:
-            # 위치 기반 로직은 백엔드에서 처리 후 available_items로 전달하는 것을 권장
-            return {
-                "message": "위치 기반 필터링은 백엔드에서 처리 후 /api/recommend POST API를 사용해주세요",
-                "recommendation": "available_items 파라미터를 사용하세요",
-                "example": {
-                    "user_id": request.user_id,
-                    "category": request.category,
-                    "available_items": "거리 내 아이템 ID 리스트"
-                }
-            }
-        
-        # region_id 기반 처리 (향후 구현)
-        if request.region_id:
-            return {
-                "message": f"지역 ID '{request.region_id}' 기반 추천은 아직 구현되지 않았습니다",
-                "recommendation": "available_items 파라미터를 사용해주세요"
-            }
-        
-        # 일반 추천으로 폴백
+        # 일반 추천으로 변환
         basic_request = RecommendRequest(
             user_id=request.user_id,
             top_n=request.top_n,
-            category=request.category
+            category=request.category,
+            available_items=None  # location 기반은 백엔드에서 처리
         )
         return recommend_items_with_filter(basic_request)
         

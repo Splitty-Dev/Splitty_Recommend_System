@@ -651,7 +651,7 @@ class TwoTowerTrainer:
     
     def load_model(self, filepath: str):
         """모델 로드"""
-        model_data = torch.load(filepath, map_location=self.device)
+        model_data = torch.load(filepath, map_location=self.device, weights_only=False)
         
         self.model.load_state_dict(model_data['model_state_dict'])
         self.user_encoder = model_data['user_encoder']

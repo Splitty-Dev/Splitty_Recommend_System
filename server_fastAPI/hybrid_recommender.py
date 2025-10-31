@@ -243,7 +243,7 @@ class HybridRecommender:
         
         return self.item_meta
     
-    def get_popular_recommendations(self, top_n: int = 50) -> List[Dict]:
+    def get_popular_recommendations(self, top_n: int = 50, category_filter: str = None, available_items: List[int] = None) -> List[Dict]:
         """인기 아이템 기반 추천 (새 사용자용)"""
         if self.train_data is None:
             return []
@@ -260,14 +260,25 @@ class HybridRecommender:
             0.3 * (popularity['user_idx'] / popularity['user_idx'].max())
         )
         
+        # available_items 필터링
+        if available_items:
+            popularity = popularity[popularity['item_idx'].isin(available_items)]
+        
+        # category 필터링
+        if category_filter and self.item_meta is not None:
+            # 카테고리 필터링 로직 (item_meta에 category_idx가 있다고 가정)
+            if 'category_idx' in self.item_meta.columns:
+                filtered_items = self.item_meta[self.item_meta['category_idx'] == category_filter]['item_idx']
+                popularity = popularity[popularity['item_idx'].isin(filtered_items)]
+        
         popular_items = popularity.nlargest(top_n, 'popularity_score')
         
         recommendations = []
         for i, row in popular_items.iterrows():
-            item_id = row['item_id']
+            item_id = row['item_idx']
             
             # 아이템 메타데이터 가져오기
-            item_info = self.item_meta[self.item_meta['item_id'] == item_id]
+            item_info = self.item_meta[self.item_meta['item_idx'] == item_id]
             if item_info.empty:
                 continue
             
@@ -320,7 +331,7 @@ class HybridRecommender:
         tt_path = os.path.join(model_dir, "two_tower_model.pth")
         if os.path.exists(tt_path):
             # 모델 설정 정보 로드
-            model_data = torch.load(tt_path, map_location=self.device)
+            model_data = torch.load(tt_path, map_location=self.device, weights_only=False)
             config = model_data['model_config']
             
             # 모델 재생성
