@@ -13,5 +13,3 @@
 - price_norm(float)
 - title_emb(vector)
     - klue-bert 모델 이용한 임베딩
- 
-### training data not included due to large file size.
