@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
 """
-하이브리드 추천 시스템 하이퍼파라미터 튜닝 스크립트
+하이브리드 추천 시스템 학습 스크립트
 
-Grid Search를 사용하여 최적의 하이퍼파라미터를 찾습니다.
-Validation set으로 평가하여 과적합을 방지합니다.
-
-평가 지표:
-- Precision@K: 추천한 아이템 중 실제로 좋아한 비율
-- Recall@K: 좋아할 아이템 중 추천한 비율
-- NDCG@K: 순위를 고려한 추천 품질
-- Hit Rate@K: 최소 1개라도 맞춘 사용자 비율
+모드:
+1. simple: 빠른 학습 (기본 파라미터 사용)
+2. tune: 하이퍼파라미터 튜닝 (Grid Search)
 
 사용법:
-python hyperparameter_tuning.py
+python train.py                    # 간단 학습
+python train.py --mode tune        # 하이퍼파라미터 튜닝
+python train.py --mode tune --quick  # 빠른 튜닝 (작은 Grid)
 """
 
 import os
 import sys
+import argparse
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Tuple
@@ -24,6 +22,7 @@ from itertools import product
 import json
 from datetime import datetime
 from hybrid_recommender import HybridRecommender
+
 
 class RecommendationEvaluator:
     """추천 시스템 평가 클래스"""
@@ -61,8 +60,7 @@ class RecommendationEvaluator:
         dcg = 0.0
         for i, item in enumerate(recommended_k):
             if item in relevant_set:
-                # 관련도는 1 (binary relevance)
-                dcg += 1.0 / np.log2(i + 2)  # i+2 because index starts at 0
+                dcg += 1.0 / np.log2(i + 2)
         
         return dcg
     
@@ -71,7 +69,6 @@ class RecommendationEvaluator:
         """NDCG@K 계산"""
         dcg = RecommendationEvaluator.dcg_at_k(recommended_items, relevant_items, k)
         
-        # Ideal DCG (모든 관련 아이템이 상위에 있을 때)
         ideal_relevant = relevant_items[:k]
         idcg = RecommendationEvaluator.dcg_at_k(ideal_relevant, relevant_items, k)
         
@@ -82,7 +79,7 @@ class RecommendationEvaluator:
     
     @staticmethod
     def hit_rate_at_k(recommended_items: List[int], relevant_items: List[int], k: int) -> float:
-        """Hit Rate@K 계산 (최소 1개라도 맞추면 1, 아니면 0)"""
+        """Hit Rate@K 계산"""
         recommended_k = recommended_items[:k]
         relevant_set = set(relevant_items)
         
@@ -99,7 +96,6 @@ class RecommendationEvaluator:
         
         print(f"\nValidation set 평가 시작 (top_k={top_k}, top_n={top_n})...")
         
-        # 사용자별 관련 아이템 (validation set에서 상호작용한 아이템)
         user_relevant_items = val_data.groupby('user_idx')['item_idx'].apply(list).to_dict()
         
         results = {k: {
@@ -117,7 +113,6 @@ class RecommendationEvaluator:
                 print(f"  진행률: {i}/{total_users} 사용자 평가 완료...", end='\r')
             
             try:
-                # 추천 생성
                 recommendations = recommender.get_recommendations(
                     user_id=str(user_id),
                     top_k=top_k,
@@ -127,10 +122,8 @@ class RecommendationEvaluator:
                 if not recommendations:
                     continue
                 
-                # 추천된 아이템 ID 리스트
                 recommended_items = [rec['item_id'] for rec in recommendations]
                 
-                # 각 K에 대해 평가
                 for k in eval_k_list:
                     results[k]['precision'].append(
                         cls.precision_at_k(recommended_items, relevant_items, k)
@@ -148,12 +141,10 @@ class RecommendationEvaluator:
                 evaluated_users += 1
                 
             except Exception as e:
-                # 추천 실패한 사용자는 스킵
                 continue
         
         print(f"\n  평가 완료: {evaluated_users}/{total_users} 사용자")
         
-        # 평균 계산
         metrics = {}
         for k in eval_k_list:
             metrics[f'Precision@{k}'] = np.mean(results[k]['precision']) if results[k]['precision'] else 0.0
@@ -167,12 +158,44 @@ class RecommendationEvaluator:
         return metrics
 
 
-def grid_search_hyperparameters(data_path: str, 
-                                model_save_path: str,
-                                param_grid: Dict,
-                                eval_k_list: List[int] = [5, 10, 20],
-                                device: str = 'cpu'):
-    """Grid Search로 최적 하이퍼파라미터 찾기"""
+def simple_train(data_path: str, model_save_path: str, device: str = 'cpu'):
+    """간단 학습 모드"""
+    
+    print("=" * 80)
+    print("간단 학습 모드")
+    print("=" * 80)
+    print(f"데이터 경로: {data_path}")
+    print(f"모델 저장 경로: {model_save_path}")
+    
+    # 추천 시스템 초기화
+    recommender = HybridRecommender(device=device)
+    
+    # 데이터 로드
+    print("\n1. 데이터 로드 중...")
+    recommender.load_data(data_path)
+    
+    # 모델 학습 (기본 파라미터)
+    print("\n2. 모델 학습 중...")
+    recommender.train_models(
+        mf_factors=50,
+        epochs=30,
+        batch_size=512
+    )
+    
+    # 모델 저장
+    print("\n3. 모델 저장 중...")
+    recommender.save_models(model_save_path)
+    
+    print("\n" + "=" * 80)
+    print("학습 완료!")
+    print("=" * 80)
+    print(f"✅ 모델이 {model_save_path}/ 에 저장되었습니다.")
+
+
+def grid_search_train(data_path: str, model_save_path: str, 
+                     param_grid: Dict, eval_k_list: List[int], 
+                     device: str = 'cpu'):
+    """Grid Search 하이퍼파라미터 튜닝"""
     
     print("=" * 80)
     print("하이퍼파라미터 Grid Search 시작")
@@ -268,19 +291,21 @@ def grid_search_hyperparameters(data_path: str,
                 
                 print(f"\n🎉 새로운 최고 점수! NDCG@10: {best_score:.4f}")
                 
-                # 최고 성능 모델 저장
+                # 최고 성능 모델 저장 (API 서버에서 바로 사용 가능하도록 루트에 저장)
                 print(f"\n최고 성능 모델 저장 중...")
-                best_model_path = os.path.join(model_save_path, "best_model")
-                recommender.save_models(best_model_path)
+                recommender.save_models(model_save_path)
                 
-                # 최고 파라미터 저장
+                # 최고 파라미터 저장 (참고용)
                 best_params_file = os.path.join(model_save_path, "best_params.json")
                 with open(best_params_file, 'w', encoding='utf-8') as f:
                     json.dump({
                         'params': best_params,
                         'metrics': best_metrics,
-                        'composite_score': best_score
+                        'composite_score': best_score,
+                        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     }, f, indent=2, ensure_ascii=False)
+                print(f"  ✓ 모델: {model_save_path}/matrix_factorization.pkl, two_tower_model.pth")
+                print(f"  ✓ 파라미터: {best_params_file}")
             
         except Exception as e:
             print(f"\n❌ 실험 실패: {str(e)}")
@@ -302,6 +327,12 @@ def grid_search_hyperparameters(data_path: str,
         for metric_name, value in best_metrics.items():
             if metric_name not in ['evaluated_users', 'total_users']:
                 print(f"  {metric_name}: {value:.4f}")
+        
+        print(f"\n💾 모델 저장 위치: {model_save_path}/")
+        print(f"   - matrix_factorization.pkl")
+        print(f"   - two_tower_model.pth")
+        print(f"   - best_params.json")
+        print(f"\n✅ API 서버(main.py)에서 바로 사용 가능합니다!")
     
     # 전체 결과를 CSV로 저장
     results_file = os.path.join(model_save_path, f"grid_search_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
@@ -315,13 +346,25 @@ def grid_search_hyperparameters(data_path: str,
     
     results_df = pd.DataFrame(results_df_data)
     results_df.to_csv(results_file, index=False, encoding='utf-8')
-    print(f"\n전체 결과가 저장되었습니다: {results_file}")
+    print(f"\n📄 전체 실험 결과가 저장되었습니다: {results_file}")
     
     return best_params, best_metrics, all_results
 
 
 def main():
     """메인 함수"""
+    
+    parser = argparse.ArgumentParser(description='하이브리드 추천 시스템 학습')
+    parser.add_argument('--mode', type=str, default='simple', 
+                       choices=['simple', 'tune'],
+                       help='학습 모드: simple (간단 학습) 또는 tune (하이퍼파라미터 튜닝)')
+    parser.add_argument('--quick', action='store_true',
+                       help='빠른 튜닝 모드 (작은 Grid 사용)')
+    parser.add_argument('--device', type=str, default='cpu',
+                       choices=['cpu', 'cuda'],
+                       help='학습 디바이스')
+    
+    args = parser.parse_args()
     
     # 경로 설정
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -333,33 +376,53 @@ def main():
     
     print(f"데이터 경로: {data_path}")
     print(f"모델 저장 경로: {model_save_path}")
+    print(f"디바이스: {args.device}\n")
     
-    # Grid Search 파라미터 정의
-    param_grid = {
-        'mf_factors': [30, 50, 70],           # Matrix Factorization 잠재 요인 수
-        'epochs': [20, 30, 40],                # Two-Tower 학습 에포크
-        'batch_size': [256, 512, 1024],       # 배치 크기
-        'top_k': [150, 250, 350],             # MF 후보 개수
-        'top_n': [50],                         # 최종 추천 개수 (고정)
-    }
-    
-    # 평가할 K 값들
-    eval_k_list = [5, 10, 20]
-    
-    # Grid Search 실행
-    best_params, best_metrics, all_results = grid_search_hyperparameters(
-        data_path=data_path,
-        model_save_path=model_save_path,
-        param_grid=param_grid,
-        eval_k_list=eval_k_list,
-        device='cpu'
-    )
+    if args.mode == 'simple':
+        # 간단 학습
+        simple_train(data_path, model_save_path, args.device)
+        
+    else:  # tune
+        # 하이퍼파라미터 튜닝
+        if args.quick:
+            # 빠른 튜닝 (작은 Grid)
+            print("⚠️  빠른 튜닝 모드: 작은 Grid로 테스트합니다.\n")
+            param_grid = {
+                'mf_factors': [30, 50],
+                'epochs': [20, 30],
+                'batch_size': [512],
+                'top_k': [200, 250],
+                'top_n': [50],
+            }
+            eval_k_list = [5, 10]
+            print(f"총 {2 * 2 * 1 * 2 * 1}가지 조합을 테스트합니다.")
+            print("예상 소요 시간: 약 20-30분\n")
+        else:
+            # 전체 튜닝 (큰 Grid)
+            param_grid = {
+                'mf_factors': [30, 50, 70],
+                'epochs': [20, 30, 40],
+                'batch_size': [256, 512, 1024],
+                'top_k': [150, 250, 350],
+                'top_n': [50],
+            }
+            eval_k_list = [5, 10, 20]
+            print(f"총 {3 * 3 * 3 * 3 * 1}가지 조합을 테스트합니다.")
+            print("예상 소요 시간: 약 2-3시간\n")
+        
+        grid_search_train(
+            data_path=data_path,
+            model_save_path=model_save_path,
+            param_grid=param_grid,
+            eval_k_list=eval_k_list,
+            device=args.device
+        )
     
     print("\n" + "=" * 80)
-    print("하이퍼파라미터 튜닝 완료!")
+    print("학습 완료!")
     print("=" * 80)
-    print(f"\n최고 성능 모델이 {model_save_path}/best_model 에 저장되었습니다.")
-    print("이제 FastAPI 서버에서 이 모델을 사용할 수 있습니다.")
+    print(f"\n✅ 모델이 {model_save_path}/ 에 저장되었습니다.")
+    print("   API 서버를 재시작하면 자동으로 이 모델을 사용합니다.")
 
 
 if __name__ == "__main__":

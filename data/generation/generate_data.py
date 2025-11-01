@@ -99,16 +99,90 @@ def make_synthetic_data(n_users=200, n_items=500, n_events=5000, seed=42):
         "title": item_titles
     })
 
-    # 4. 이벤트 데이터 생성
+    # 4. 사용자별 선호 카테고리 기반 이벤트 데이터 생성
+    print("사용자별 선호 카테고리를 고려한 이벤트 데이터 생성 중...")
+    
+    # 각 사용자에게 선호 카테고리 2-4개 할당 (다양성 증가)
+    user_preferences = {}
+    for user_id in user_ids:
+        # 2-4개 카테고리 경험 (50%는 3개, 30%는 2개, 20%는 4개)
+        n_preferred_categories = np.random.choice([2, 3, 4], p=[0.3, 0.5, 0.2])
+        preferred_categories = np.random.choice(
+            list(category_data.keys()), 
+            size=n_preferred_categories, 
+            replace=False
+        )
+        user_preferences[user_id] = preferred_categories
+    
+    print(f"  - 사용자별 선호 카테고리 할당 완료 (예: {user_ids[0]} -> {user_preferences[user_ids[0]]})")
+    
+    # 이벤트 생성 (세션 기반 + 중복 방지)
+    events = []
     start_time = pd.Timestamp("2025-10-01")
-    timestamps = [start_time + pd.Timedelta(seconds=int(x)) for x in np.random.randint(0, 86400 * 30, size=n_events)]
-    df = pd.DataFrame({
-        "user_id": np.random.choice(user_ids, size=n_events),
-        "item_id": np.random.choice(item_ids, size=n_events),
-        "action": np.random.choice(["view", "like", "enter", "purchase"], p=[0.7, 0.15, 0.09, 0.06], size=n_events),
-        # view: 게시물 보기, like: 좋아요, enter: 구매 진입, purchase: 실제 구매
-        "timestamp": timestamps
-    })
+    events_generated = 0
+    current_time = start_time
+    
+    # 사용자별 이미 상호작용한 아이템 추적 (중복 방지)
+    user_interacted_items = {user_id: set() for user_id in user_ids}
+    
+    while events_generated < n_events:
+        # 랜덤으로 사용자 선택
+        user_id = np.random.choice(user_ids)
+        preferred_categories = user_preferences[user_id]
+        
+        # 해당 사용자의 선호 카테고리 내 아이템만 필터링
+        preferred_items = item_meta[item_meta['category_idx'].isin(preferred_categories)]['item_id'].values
+        
+        # 이미 상호작용한 아이템 제외
+        available_items = [item for item in preferred_items if item not in user_interacted_items[user_id]]
+        
+        if len(available_items) == 0:
+            # 이 사용자는 모든 선호 아이템과 이미 상호작용함 -> 새 아이템 풀로 리셋
+            user_interacted_items[user_id] = set()
+            available_items = list(preferred_items)
+        
+        # 세션 단위로 상호작용 생성 (3-7개 아이템)
+        session_size = min(
+            np.random.randint(3, 8), 
+            n_events - events_generated, 
+            len(available_items)
+        )
+        
+        # 중복 없이 아이템 선택
+        selected_items = np.random.choice(available_items, size=session_size, replace=False)
+        
+        # 세션 내 아이템들에 대해 시간 순서대로 액션 생성
+        for item_id in selected_items:
+            # 액션 타입 결정 (view가 가장 많고, purchase는 적게)
+            action = np.random.choice(
+                ["view", "like", "enter", "purchase"], 
+                p=[0.65, 0.18, 0.12, 0.05]
+            )
+            
+            # 세션 내에서 시간이 증가하도록 (10초-5분 간격)
+            current_time += pd.Timedelta(seconds=int(np.random.randint(10, 300)))
+            
+            events.append({
+                "user_id": user_id,
+                "item_id": item_id,
+                "action": action,
+                "timestamp": current_time
+            })
+            
+            # 상호작용한 아이템 기록
+            user_interacted_items[user_id].add(item_id)
+            
+            events_generated += 1
+            if events_generated >= n_events:
+                break
+        
+        # 세션 간 시간 간격 (1시간-1일)
+        current_time += pd.Timedelta(seconds=int(np.random.randint(3600, 86400)))
+    
+    print(f"  - 총 {len(events):,}개 이벤트 생성 완료")
+    
+    # DataFrame 생성 및 메타데이터 병합
+    df = pd.DataFrame(events)
     df = df.merge(item_meta[["item_id", "category_idx", "price", "title"]], on="item_id", how="left")
     
     return df, item_meta, user_ids, item_ids
@@ -214,7 +288,7 @@ def main():
     df, item_meta, user_ids, item_ids = make_synthetic_data(
         n_users=200,
         n_items=500,
-        n_events=7000,
+        n_events=20000,
         seed=42
     )
     

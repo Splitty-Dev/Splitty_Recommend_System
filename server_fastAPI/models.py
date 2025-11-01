@@ -548,13 +548,17 @@ class TwoTowerTrainer:
     def fit(self, train_df: pd.DataFrame, val_df: pd.DataFrame = None, 
             epochs: int = 50, batch_size: int = 1024, lr: float = 0.001,
             data_dir: str = None):
-        """모델 학습"""
+        """모델 학습 (네거티브 샘플링 포함)"""
         print("Two-Tower 모델 학습 시작...")
         
         self.prepare_encoders(train_df)
         
+        # 네거티브 샘플링 추가
+        train_df_with_negatives = self._add_negative_samples(train_df, n_negative=3)
+        print(f"  - 학습 데이터: Positive {len(train_df)}개 + Negative {len(train_df_with_negatives) - len(train_df)}개")
+        
         # 데이터 준비
-        train_dataset = self._prepare_dataset(train_df)
+        train_dataset = self._prepare_dataset(train_df_with_negatives)
         train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
@@ -563,6 +567,7 @@ class TwoTowerTrainer:
         self.model.train()
         for epoch in range(epochs):
             total_loss = 0
+            batch_count = 0
             for batch in train_loader:
                 user_ids, item_ids, category_ids, price_norm, labels = batch
                 user_ids = user_ids.to(self.device)
@@ -578,12 +583,53 @@ class TwoTowerTrainer:
                 optimizer.step()
                 
                 total_loss += loss.item()
+                batch_count += 1
             
             if (epoch + 1) % 10 == 0:
-                avg_loss = total_loss / len(train_loader)
+                avg_loss = total_loss / batch_count if batch_count > 0 else 0
                 print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}")
         
         print("Two-Tower 모델 학습 완료!")
+    
+    def _add_negative_samples(self, df: pd.DataFrame, n_negative: int = 3):
+        """네거티브 샘플 추가"""
+        import random
+        
+        # 사용자별 상호작용한 아이템 세트
+        user_items = df.groupby('user_idx')['item_idx'].apply(set).to_dict()
+        all_items = set(df['item_idx'].unique())
+        
+        negative_samples = []
+        
+        for user_idx, interacted_items in user_items.items():
+            # 상호작용하지 않은 아이템들
+            uninteracted_items = all_items - interacted_items
+            
+            # 각 positive 상호작용에 대해 네거티브 샘플 생성
+            n_positives = len(interacted_items)
+            n_negatives_for_user = min(n_negative * n_positives, len(uninteracted_items))
+            
+            if n_negatives_for_user > 0:
+                sampled_negative_items = random.sample(list(uninteracted_items), n_negatives_for_user)
+                
+                # 카테고리와 가격 정보는 해당 아이템의 메타데이터에서 가져오기
+                for item_idx in sampled_negative_items:
+                    item_info = df[df['item_idx'] == item_idx].iloc[0] if len(df[df['item_idx'] == item_idx]) > 0 else None
+                    if item_info is not None:
+                        negative_samples.append({
+                            'user_idx': user_idx,
+                            'item_idx': item_idx,
+                            'label': 0,  # 네거티브 샘플
+                            'weight': 0,
+                            'price_norm': item_info['price_norm'],
+                            'category_idx': item_info['category_idx']
+                        })
+        
+        # Positive + Negative 합치기
+        negative_df = pd.DataFrame(negative_samples)
+        combined_df = pd.concat([df, negative_df], ignore_index=True).sample(frac=1).reset_index(drop=True)
+        
+        return combined_df
     
     def _prepare_dataset(self, df: pd.DataFrame):
         """PyTorch Dataset 준비"""
