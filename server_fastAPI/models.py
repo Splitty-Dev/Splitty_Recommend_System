@@ -191,11 +191,15 @@ class ImplicitMatrixFactorization:
         
         # available_items 필터링 (거리 기반으로 제한된 아이템만 고려)
         if available_items is not None:
-            available_items_set = set(available_items)
-            for item_id in self.item_encoder:
-                if item_id not in available_items_set:
-                    item_idx = self.item_encoder[item_id]
-                    scores[item_idx] = -np.inf
+            # available_items를 numpy 타입으로 변환하여 매칭
+            available_items_set = set(np.int64(item) for item in available_items)
+            # 모든 아이템을 -inf로 초기화
+            scores[:] = -np.inf
+            # available_items에 있는 아이템만 실제 점수 복원
+            for item_idx in available_items_set:
+                if item_idx in self.item_encoder:
+                    encoder_idx = self.item_encoder[item_idx]
+                    scores[encoder_idx] = np.dot(user_vector, self.item_factors[encoder_idx])
         
         # 이미 상호작용한 아이템 제외
         if exclude_seen and interaction_df is not None:
@@ -344,6 +348,7 @@ class MatrixFactorization:
     def get_top_k_candidates(self, user_id: str, k: int = 250, 
                            exclude_seen: bool = True, 
                            interaction_df: pd.DataFrame = None,
+                           category_filter: int = None,
                            available_items: List[int] = None) -> List[Tuple[str, float]]:
         """
         특정 사용자에게 Top-K 후보 아이템 반환
@@ -360,11 +365,16 @@ class MatrixFactorization:
         
         # available_items 필터링 (거리 기반으로 제한된 아이템만 고려)
         if available_items is not None:
-            available_items_set = set(available_items)
-            for item_id in self.item_encoder:
-                if item_id not in available_items_set:
-                    item_idx = self.item_encoder[item_id]
-                    scores[item_idx] = -np.inf
+            # available_items를 numpy 타입으로 변환
+            available_items_set = set(np.int64(item) for item in available_items)
+            # 모든 아이템을 -inf로 초기화
+            scores[:] = -np.inf
+            # available_items에 있는 아이템만 실제 점수 복원
+            user_vector = self.user_factors[user_idx]
+            for item_idx in available_items_set:
+                if item_idx in self.item_encoder:  # item_idx가 encoder에 있는지 확인
+                    encoder_idx = self.item_encoder[item_idx]
+                    scores[encoder_idx] = np.dot(user_vector, self.item_factors[encoder_idx])
         
         # 이미 상호작용한 아이템 제외
         if exclude_seen and interaction_df is not None:
@@ -603,23 +613,21 @@ class TwoTowerTrainer:
                     
                 item_idx = self.item_encoder[item_id]
                 
-                # 아이템 메타데이터 가져오기
-                item_info = item_meta[item_meta['item_id'] == item_id]
+                # 아이템 메타데이터 가져오기 (item_idx 사용)
+                item_info = item_meta[item_meta['item_idx'] == item_id]
                 if item_info.empty:
                     continue
                 
-                category = item_info.iloc[0]['category']
-                price_norm = item_info.iloc[0]['price_norm']
+                category_idx_value = item_info.iloc[0]['category_idx']
+                price_norm = item_info.iloc[0].get('price_norm', 0.0)
                 
-                if category not in self.category_encoder:
-                    continue
-                
-                category_idx = self.category_encoder[category]
+                # category_idx를 0-based로 변환 (데이터는 1-6, 모델은 0-5 기대)
+                category_idx_for_model = category_idx_value - 1 if category_idx_value > 0 else 0
                 
                 # 텐서 생성
                 user_tensor = torch.LongTensor([user_idx]).to(self.device)
                 item_tensor = torch.LongTensor([item_idx]).to(self.device)
-                category_tensor = torch.LongTensor([category_idx]).to(self.device)
+                category_tensor = torch.LongTensor([category_idx_for_model]).to(self.device)
                 price_tensor = torch.FloatTensor([price_norm]).to(self.device)
                 
                 # 예측

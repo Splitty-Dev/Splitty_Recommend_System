@@ -118,7 +118,7 @@ class HybridRecommender:
         print("\n=== 하이브리드 추천 시스템 학습 완료 ===")
     
     def get_recommendations(self, user_id: str, top_k: int = 250, top_n: int = 50, 
-                           category_filter: str = None, available_items: List[int] = None) -> List[Dict]:
+                           category_filter: int = None, available_items: List[int] = None) -> List[Dict]:
         """
         하이브리드 추천 실행
         
@@ -126,8 +126,8 @@ class HybridRecommender:
             user_id: 사용자 ID
             top_k: Matrix Factorization에서 추출할 후보 개수
             top_n: 최종 반환할 추천 개수
-            category_filter: 특정 카테고리로 필터링 (옵션)
-            available_items: 거리 내 사용 가능한 아이템 ID 리스트 (옵션)
+            category_filter: 카테고리 ID (1-6: 1=식품, 2=생활/주방, 3=뷰티/미용, 4=패션, 5=건강/운동, 6=유아)
+            available_items: 거리 내 사용 가능한 아이템 ID 리스트 (옵션) - 처음부터 이 범위 내에서만 추천
             
         Returns:
             추천 결과 리스트
@@ -135,26 +135,28 @@ class HybridRecommender:
         if not self.is_trained:
             raise ValueError("모델이 학습되지 않았습니다.")
         
-        # 카테고리 필터링을 위해 문자열을 인덱스로 변환
-        category_idx_filter = None
-        if category_filter:
-            category_idx_filter = self.CATEGORY_MAPPING.get(category_filter)
-            if category_idx_filter is None:
-                print(f"경고: 알 수 없는 카테고리 '{category_filter}'. 가능한 카테고리: {list(self.CATEGORY_MAPPING.keys())}")
-                return []
+        # category_filter는 이미 정수 (1-6)이므로 그대로 사용
+        category_idx_filter = category_filter
         
-        filter_msg = f" (카테고리: {category_filter})" if category_filter else ""
-        print(f"\n사용자 {user_id}에 대한 하이브리드 추천 시작 (K={top_k}, N={top_n}){filter_msg}")
+        filter_msg = f" (카테고리 ID: {category_filter})" if category_filter else ""
+        available_msg = f" (available_items: {len(available_items)} 개)" if available_items else ""
+        print(f"\n사용자 {user_id}에 대한 하이브리드 추천 시작 (K={top_k}, N={top_n}){filter_msg}{available_msg}")
         
-        # 1단계: Matrix Factorization으로 Top-K 후보 생성
+        # user_id를 정수로 변환 (encoder의 키가 int/numpy.int64이므로)
+        try:
+            user_id_int = int(user_id)
+        except (ValueError, TypeError):
+            user_id_int = user_id
+        
+        # 1단계: Matrix Factorization으로 Top-K 후보 생성 (available_items 범위 내에서)
         print("1단계: Matrix Factorization으로 후보 생성...")
         mf_candidates = self.matrix_factorization.get_top_k_candidates(
-            user_id=user_id,
+            user_id=user_id_int,  # 정수로 변환된 user_id 사용
             k=top_k,
             exclude_seen=True,
             interaction_df=self.train_data,
             category_filter=category_idx_filter,
-            available_items=available_items
+            available_items=available_items  # 처음부터 available_items로 제한
         )
         
         if not mf_candidates:
@@ -163,7 +165,7 @@ class HybridRecommender:
         
         print(f"Matrix Factorization 후보 수: {len(mf_candidates)}")
         
-        # 2단계: Two-Tower 모델로 개인화된 순위 매기기
+        # 2단계: Two-Tower 모델로 개인화된 순위 매기기 (MF 후보들에 대해서만)
         print("2단계: Two-Tower 모델로 순위 매기기...")
         candidate_items = [item_idx for item_idx, _ in mf_candidates]
         
@@ -177,7 +179,7 @@ class HybridRecommender:
             ]
         
         scored_items = self.two_tower_trainer.predict_scores(
-            user_id=user_id,
+            user_id=user_id_int,  # 정수로 변환된 user_id 사용
             candidate_items=candidate_items,
             item_meta=item_meta_with_norm
         )
@@ -192,14 +194,8 @@ class HybridRecommender:
         print("3단계: 최종 추천 결과 구성...")
         recommendations = []
         
-        # available_items 필터링을 위한 set 변환
-        available_items_set = set(available_items) if available_items else None
-        
-        for i, (item_idx, tt_score) in enumerate(scored_items[:top_n * 2]):  # 필터링을 고려해 더 많이 가져옴
-            # available_items 필터링 적용
-            if available_items_set and item_idx not in available_items_set:
-                continue
-                
+        # Top-N까지만 처리 (이미 available_items로 필터링되어 있음)
+        for i, (item_idx, tt_score) in enumerate(scored_items[:top_n]):
             # MF 점수 찾기
             mf_score = next((score for iid, score in mf_candidates if iid == item_idx), 0.0)
             
@@ -214,18 +210,13 @@ class HybridRecommender:
             final_score = 0.6 * tt_score + 0.4 * (mf_score / 10.0 if mf_score > 0 else 0)
             
             recommendation = {
-                'item_id': item_idx,
+                'item_id': int(item_idx),  # numpy.int64 -> Python int 변환
                 'score': float(final_score)
             }
             
             recommendations.append(recommendation)
-            
-            # 충분한 개수가 모이면 중단
-            if len(recommendations) >= top_n:
-                break
         
-        filter_msg = f" (available_items: {len(available_items_set)} 개)" if available_items_set else ""
-        print(f"최종 추천 완료: {len(recommendations)} 개 아이템{filter_msg}")
+        print(f"최종 추천 완료: {len(recommendations)} 개 아이템")
         return recommendations
     
     def _prepare_item_meta_for_prediction(self) -> pd.DataFrame:
@@ -243,8 +234,14 @@ class HybridRecommender:
         
         return self.item_meta
     
-    def get_popular_recommendations(self, top_n: int = 50, category_filter: str = None, available_items: List[int] = None) -> List[Dict]:
-        """인기 아이템 기반 추천 (새 사용자용)"""
+    def get_popular_recommendations(self, top_n: int = 50, category_filter: int = None, available_items: List[int] = None) -> List[Dict]:
+        """인기 아이템 기반 추천 (새 사용자용)
+        
+        Args:
+            top_n: 반환할 추천 개수
+            category_filter: 카테고리 ID (1-6: 1=식품, 2=생활/주방, 3=뷰티/미용, 4=패션, 5=건강/운동, 6=유아)
+            available_items: 거리 내 사용 가능한 아이템 ID 리스트
+        """
         if self.train_data is None:
             return []
         
@@ -264,9 +261,8 @@ class HybridRecommender:
         if available_items:
             popularity = popularity[popularity['item_idx'].isin(available_items)]
         
-        # category 필터링
+        # category 필터링 (category_filter는 1-6 정수)
         if category_filter and self.item_meta is not None:
-            # 카테고리 필터링 로직 (item_meta에 category_idx가 있다고 가정)
             if 'category_idx' in self.item_meta.columns:
                 filtered_items = self.item_meta[self.item_meta['category_idx'] == category_filter]['item_idx']
                 popularity = popularity[popularity['item_idx'].isin(filtered_items)]
@@ -285,7 +281,7 @@ class HybridRecommender:
             item_data = item_info.iloc[0]
             
             recommendation = {
-                'item_id': item_id,
+                'item_id': int(item_id),  # numpy.int64 -> Python int 변환
                 'title': item_data.get('title', 'Unknown'),
                 'category': item_data.get('category', 'Unknown'),
                 'price': int(item_data.get('price', 0)),

@@ -14,13 +14,13 @@ app = FastAPI()
 class RecommendRequest(BaseModel):
     user_id: str = Field(..., description="사용자 ID")
     top_n: int = Field(50, ge=1, le=100, description="상위 추천 개수")
-    category: Optional[str] = Field(None, description="특정 카테고리로 필터링")
+    categoryId: Optional[int] = Field(None, ge=1, le=6, description="카테고리 ID (1-6: 1=식품, 2=생활/주방, 3=뷰티/미용, 4=패션, 5=건강/운동, 6=유아)")
     available_items: Optional[List[int]] = Field(None, description="거리 내 사용 가능한 아이템 ID 리스트")
 
 class LocationBasedRequest(BaseModel):
     user_id: str = Field(..., description="사용자 ID")
     top_n: int = Field(50, ge=1, le=100, description="상위 추천 개수")
-    category: Optional[str] = Field(None, description="특정 카테고리로 필터링")
+    categoryId: Optional[int] = Field(None, ge=1, le=6, description="카테고리 ID (1-6: 1=식품, 2=생활/주방, 3=뷰티/미용, 4=패션, 5=건강/운동, 6=유아)")
     location: Optional[Dict] = Field(None, description="위치 정보 (lat, lng, radius)")
     region_id: Optional[str] = Field(None, description="지역 ID")
 
@@ -65,8 +65,8 @@ def check_user_exists(user_id: str) -> bool:
         print(f"사용자 확인 중 오류: {str(e)}")
         return False
 
-def get_popular_recommendations_internal(top_n: int, category_filter: Optional[str] = None, available_items: Optional[List[int]] = None) -> List[Dict]:
-    """내부용 인기 아이템 추천 함수"""
+def get_popular_recommendations_internal(top_n: int, category_filter: Optional[int] = None, available_items: Optional[List[int]] = None) -> List[Dict]:
+    """내부용 인기 아이템 추천 함수 (category_filter: 1-6 정수)"""
     try:
         if hybrid_model_loaded and hybrid_recommender:
             recommendations = hybrid_recommender.get_popular_recommendations(
@@ -502,7 +502,7 @@ def recommend_items_with_filter(request: RecommendRequest):
                         user_id=request.user_id,
                         top_k=250, 
                         top_n=request.top_n,
-                        category_filter=request.category,
+                        category_filter=request.categoryId,
                         available_items=request.available_items
                     )
                     
@@ -523,7 +523,7 @@ def recommend_items_with_filter(request: RecommendRequest):
             # 2-B. 신규 사용자 또는 에러 발생 → 인기 아이템 추천
             popular_items = get_popular_recommendations_internal(
                 top_n=request.top_n,
-                category_filter=request.category,
+                category_filter=request.categoryId,
                 available_items=request.available_items
             )
             
@@ -556,7 +556,7 @@ def recommend_items_by_location(request: LocationBasedRequest):
         basic_request = RecommendRequest(
             user_id=request.user_id,
             top_n=request.top_n,
-            category=request.category,
+            categoryId=request.categoryId,
             available_items=None  # location 기반은 백엔드에서 처리
         )
         return recommend_items_with_filter(basic_request)
