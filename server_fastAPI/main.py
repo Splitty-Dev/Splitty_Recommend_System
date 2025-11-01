@@ -360,14 +360,11 @@ def recommend_items_with_filter(request: RecommendRequest):
         # 2. 추천 생성 (전체 추천 리스트)
         if user_exists and hybrid_model_loaded and hybrid_recommender:
             try:
-                # 충분한 개수를 가져오기 위해 더 많이 요청
-                # start_rank + top_n 만큼 필요
-                fetch_count = start_rank + request.top_n - 1
-                
+                # has_next 판단을 위해 충분히 많이 가져옴 (최대 100개)
                 recommendations = hybrid_recommender.get_recommendations(
                     user_id=request.user_id,
                     top_k=250, 
-                    top_n=min(fetch_count, 100),  # 최대 100개로 제한
+                    top_n=100,  # 충분히 많이 가져와서 페이징 판단
                     category_filter=request.categoryId,
                     available_items=request.available_items
                 )
@@ -378,9 +375,9 @@ def recommend_items_with_filter(request: RecommendRequest):
         
         if not user_exists:
             # 신규 사용자 → 인기 아이템
-            fetch_count = start_rank + request.top_n - 1
+            # has_next 판단을 위해 충분히 많이 가져옴 (최대 100개)
             recommendations = hybrid_recommender.get_popular_recommendations(
-                top_n=min(fetch_count, 100),
+                top_n=100,
                 category_filter=request.categoryId,
                 available_items=request.available_items
             ) if hybrid_model_loaded and hybrid_recommender else []
@@ -393,6 +390,11 @@ def recommend_items_with_filter(request: RecommendRequest):
         # 슬라이싱
         paginated_recommendations = recommendations[start_idx:end_idx]
         
+        # has_next 계산: available_items 개수와 현재 반환한 마지막 순위 비교
+        total_available_items = len(request.available_items) if request.available_items else 500
+        last_returned_rank = start_rank + len(paginated_recommendations) - 1
+        has_next = last_returned_rank < total_available_items
+        
         # 4. rank 재조정 (start_rank부터 시작)
         simple_recommendations = []
         for i, rec in enumerate(paginated_recommendations):
@@ -404,7 +406,8 @@ def recommend_items_with_filter(request: RecommendRequest):
         # 5. 응답 구성
         return {
             "user_id": request.user_id,
-            "items": simple_recommendations
+            "items": simple_recommendations,
+            "has_next": has_next
         }
         
     except HTTPException:
