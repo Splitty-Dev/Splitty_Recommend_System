@@ -15,14 +15,8 @@ class RecommendRequest(BaseModel):
     user_id: str = Field(..., description="사용자 ID")
     top_n: int = Field(50, ge=1, le=100, description="상위 추천 개수")
     categoryId: Optional[int] = Field(None, ge=1, le=6, description="카테고리 ID (1-6: 1=식품, 2=생활/주방, 3=뷰티/미용, 4=패션, 5=건강/운동, 6=유아)")
-    available_items: Optional[List[int]] = Field(None, description="거리 내 사용 가능한 아이템 ID 리스트")
-
-class LocationBasedRequest(BaseModel):
-    user_id: str = Field(..., description="사용자 ID")
-    top_n: int = Field(50, ge=1, le=100, description="상위 추천 개수")
-    categoryId: Optional[int] = Field(None, ge=1, le=6, description="카테고리 ID (1-6: 1=식품, 2=생활/주방, 3=뷰티/미용, 4=패션, 5=건강/운동, 6=유아)")
-    location: Optional[Dict] = Field(None, description="위치 정보 (lat, lng, radius)")
-    region_id: Optional[str] = Field(None, description="지역 ID")
+    available_items: List[int] = Field(..., description="거리 내 사용 가능한 아이템 ID 리스트 (필수)")
+    rank: Optional[int] = Field(None, ge=1, description="페이징 시작 순위 (1부터 시작, 기본값: 1)")
 
 # 글로벌 변수로 데이터 저장
 item_embeddings = None
@@ -288,85 +282,12 @@ def get_user_recommendations(user_id: str, top_n: int = 5) -> List[Dict]:
 def home():
     return {"message": "Splitty 추천 시스템 API"}
 
-@app.get("/api/recommend")
-def recommend_items(
-    user_id: str = Query(..., description="사용자 ID"),
-    top_n: int = Query(50, ge=1, le=100, description="상위 추천 개수 (1-100)"),
-    category: Optional[str] = Query(None, description="특정 카테고리로 필터링 (옵션)")
-):
-    """
-    사용자에게 아이템을 추천하는 API 엔드포인트 - 아이템 ID와 순위만 반환
-    
-    - **user_id**: 추천을 받을 사용자의 ID
-    - **top_n**: 반환할 상위 추천 아이템 개수 (기본값: 50, 최대: 100)
-    - **category**: 특정 카테고리로 필터링 (옵션, 없으면 전체 카테고리)
-    
-    예시: 
-    - 전체 추천: /api/recommend?user_id=user123&top_n=10
-    - 카테고리 필터링: /api/recommend?user_id=user123&top_n=10&category=전자제품
-    """
-    try:
-        # 하이브리드 모델 시도
-        if hybrid_model_loaded and hybrid_recommender:
-            try:
-                recommendations = hybrid_recommender.get_recommendations(
-                    user_id=user_id,
-                    top_k=250, 
-                    top_n=top_n,
-                    category_filter=category
-                )
-                
-                # 간단한 응답 형태로 변환
-                simple_recommendations = [
-                    {
-                        "item_id": rec["item_id"],
-                        "rank": rec["rank"]
-                    }
-                    for rec in recommendations
-                ]
-                
-                return {
-                    "user_id": user_id,
-                    "items": simple_recommendations
-                }
-                
-            except Exception as hybrid_error:
-                print(f"하이브리드 모델 오류: {str(hybrid_error)}")
-                # 기존 모델로 폴백
-        
-        # 기존 콘텐츠 기반 모델 사용
-        if not data_loaded:
-            load_recommendation_data()
-        
-        # 기존 추천 결과 생성
-        recommendations = get_user_recommendations(user_id, top_n)
-        
-        # 간단한 응답 형태로 변환
-        simple_recommendations = [
-            {
-                "item_id": rec.get("item_id", ""),
-                "rank": i + 1
-            }
-            for i, rec in enumerate(recommendations)
-        ]
-        
-        return {
-            "user_id": user_id,
-            "items": simple_recommendations
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"추천 처리 중 오류가 발생했습니다: {str(e)}"
-        )
-
 @app.get("/api/health")
 def health_check():
     """시스템 상태 체크 엔드포인트"""
     return {
         "status": "healthy",
-        "data_loaded": data_loaded,
+        "hybrid_model_loaded": hybrid_model_loaded,
         "timestamp": pd.Timestamp.now().isoformat()
     }
 
@@ -375,8 +296,7 @@ def get_system_stats():
     """시스템 통계 정보 제공"""
     stats = {
         "timestamp": pd.Timestamp.now().isoformat(),
-        "hybrid_model_loaded": hybrid_model_loaded,
-        "legacy_data_loaded": data_loaded
+        "hybrid_model_loaded": hybrid_model_loaded
     }
     
     # 하이브리드 모델 정보
@@ -387,95 +307,28 @@ def get_system_stats():
         except Exception as e:
             stats["hybrid_model_error"] = str(e)
     
-    # 기존 시스템 정보 (폴백용)
-    if data_loaded:
-        legacy_stats = {}
-        
-        # 임베딩 정보
-        if item_embeddings is not None:
-            legacy_stats["embeddings"] = {
-                "total_items": item_embeddings.shape[0],
-                "embedding_dimension": item_embeddings.shape[1]
-            }
-        
-        # 인코더 정보
-        if encoders is not None:
-            legacy_stats["encoders"] = {
-                "available_encoders": list(encoders.keys())
-            }
-        
-        # 데이터셋 정보
-        if user_item_test is not None:
-            legacy_stats["test_data"] = {
-                "rows": len(user_item_test),
-                "unique_users": user_item_test['user_id'].nunique() if 'user_id' in user_item_test.columns else 0,
-                "unique_items": user_item_test['item_id'].nunique() if 'item_id' in user_item_test.columns else 0
-            }
-        
-        if user_item_val is not None:
-            legacy_stats["validation_data"] = {
-                "rows": len(user_item_val),
-                "unique_users": user_item_val['user_id'].nunique() if 'user_id' in user_item_val.columns else 0,
-                "unique_items": user_item_val['item_id'].nunique() if 'item_id' in user_item_val.columns else 0
-            }
-        
-        stats["legacy_model"] = legacy_stats
-    
     return stats
-
-@app.get("/api/popular")
-def get_popular_items(
-    top_n: int = Query(50, ge=1, le=100, description="인기 아이템 개수")
-):
-    """인기 아이템 추천 (신규 사용자용)"""
-    try:
-        if hybrid_model_loaded and hybrid_recommender:
-            recommendations = hybrid_recommender.get_popular_recommendations(top_n=top_n)
-            
-            # 간결한 응답으로 변환
-            simple_recs = simplify_response(recommendations)
-            
-            return {
-                "user_id": "new_user",
-                "items": simple_recs
-            }
-        
-        # 폴백: 기존 방식
-        if not data_loaded:
-            load_recommendation_data()
-        
-        raise HTTPException(
-            status_code=503,
-            detail="추천 시스템을 사용할 수 없습니다."
-        )
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"인기 아이템 추천 중 오류가 발생했습니다: {str(e)}"
-        )
 
 @app.post("/api/recommend")
 def recommend_items_with_filter(request: RecommendRequest):
     """
-    통합 추천 API - 사용자 존재 여부를 자동으로 판단하여 추천
-    
-    - **신규 사용자**: 인기 아이템 추천 (popular items)
-    - **기존 사용자**: 개인화 추천 (personalized hybrid)
+    통합 추천 API - available_items 필수, 페이징 지원
     
     요청 파라미터:
     - **user_id**: 추천을 받을 사용자의 ID (필수)
     - **top_n**: 반환할 상위 추천 아이템 개수 (기본값: 50, 최대: 100)
-    - **category**: 특정 카테고리로 필터링 (옵션)
-    - **available_items**: 거리 내 사용 가능한 아이템 ID 리스트 (옵션)
+    - **categoryId**: 카테고리 ID 필터 (1-6, 옵션)
+    - **available_items**: 거리 내 사용 가능한 아이템 ID 리스트 (필수)
+    - **rank**: 페이징 시작 순위 (옵션, 기본값: 1)
     
     예시 요청:
     ```json
     {
         "user_id": "user_1",
         "top_n": 10,
-        "category": "식품",
-        "available_items": [101, 205, 310, 450, 892]
+        "categoryId": 1,
+        "available_items": [101, 205, 310, 450, 892],
+        "rank": 11
     }
     ```
     
@@ -484,90 +337,83 @@ def recommend_items_with_filter(request: RecommendRequest):
     {
         "user_id": "user_1",
         "items": [
-            {"item_id": 297, "rank": 1},
-            {"item_id": 418, "rank": 2}
+            {"item_id": 297, "rank": 11},
+            {"item_id": 418, "rank": 12}
         ]
     }
     ```
     """
     try:
+        # available_items 필수 체크
+        if not request.available_items:
+            raise HTTPException(
+                status_code=400,
+                detail="available_items는 필수입니다."
+            )
+        
+        # rank 기본값 설정 (1부터 시작)
+        start_rank = request.rank if request.rank else 1
+        
         # 1. 사용자 존재 여부 확인
         user_exists = check_user_exists(request.user_id)
         
-        if user_exists:
-            # 2-A. 기존 사용자 → 개인화 추천
-            if hybrid_model_loaded and hybrid_recommender:
-                try:
-                    recommendations = hybrid_recommender.get_recommendations(
-                        user_id=request.user_id,
-                        top_k=250, 
-                        top_n=request.top_n,
-                        category_filter=request.categoryId,
-                        available_items=request.available_items
-                    )
-                    
-                    # 간단한 응답 형태로 변환
-                    simple_recommendations = simplify_response(recommendations)
-                    
-                    return {
-                        "user_id": request.user_id,
-                        "items": simple_recommendations
-                    }
-                    
-                except Exception as hybrid_error:
-                    print(f"하이브리드 모델 오류: {str(hybrid_error)}")
-                    # 에러 시 인기 아이템으로 폴백
-                    user_exists = False
+        # 2. 추천 생성 (전체 추천 리스트)
+        if user_exists and hybrid_model_loaded and hybrid_recommender:
+            try:
+                # 충분한 개수를 가져오기 위해 더 많이 요청
+                # start_rank + top_n 만큼 필요
+                fetch_count = start_rank + request.top_n - 1
+                
+                recommendations = hybrid_recommender.get_recommendations(
+                    user_id=request.user_id,
+                    top_k=250, 
+                    top_n=min(fetch_count, 100),  # 최대 100개로 제한
+                    category_filter=request.categoryId,
+                    available_items=request.available_items
+                )
+                
+            except Exception as hybrid_error:
+                print(f"하이브리드 모델 오류: {str(hybrid_error)}")
+                user_exists = False
         
         if not user_exists:
-            # 2-B. 신규 사용자 또는 에러 발생 → 인기 아이템 추천
-            popular_items = get_popular_recommendations_internal(
-                top_n=request.top_n,
+            # 신규 사용자 → 인기 아이템
+            fetch_count = start_rank + request.top_n - 1
+            recommendations = hybrid_recommender.get_popular_recommendations(
+                top_n=min(fetch_count, 100),
                 category_filter=request.categoryId,
                 available_items=request.available_items
-            )
-            
-            return {
-                "user_id": request.user_id,
-                "items": popular_items
-            }
+            ) if hybrid_model_loaded and hybrid_recommender else []
         
-        # 3. 모든 방법 실패 시
-        raise HTTPException(
-            status_code=503,
-            detail="추천 시스템을 사용할 수 없습니다."
-        )
+        # 3. 페이징 처리
+        # start_rank는 1-based이므로 0-based 인덱스로 변환
+        start_idx = start_rank - 1
+        end_idx = start_idx + request.top_n
         
+        # 슬라이싱
+        paginated_recommendations = recommendations[start_idx:end_idx]
+        
+        # 4. rank 재조정 (start_rank부터 시작)
+        simple_recommendations = []
+        for i, rec in enumerate(paginated_recommendations):
+            simple_recommendations.append({
+                "item_id": rec.get("item_id"),
+                "rank": start_rank + i
+            })
+        
+        # 5. 응답 구성
+        return {
+            "user_id": request.user_id,
+            "items": simple_recommendations
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"추천 처리 중 오류가 발생했습니다: {str(e)}"
         )
-
-@app.post("/api/recommend/location")
-def recommend_items_by_location(request: LocationBasedRequest):
-    """
-    위치 기반 아이템 추천 API
-    
-    백엔드에서 available_items를 전달하면 해당 아이템 중에서만 추천합니다.
-    """
-    try:
-        # 일반 추천으로 변환
-        basic_request = RecommendRequest(
-            user_id=request.user_id,
-            top_n=request.top_n,
-            categoryId=request.categoryId,
-            available_items=None  # location 기반은 백엔드에서 처리
-        )
-        return recommend_items_with_filter(basic_request)
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"위치 기반 추천 처리 중 오류가 발생했습니다: {str(e)}"
-        )
-
-
 
 @app.on_event("startup")
 async def startup_event():
@@ -578,13 +424,7 @@ async def startup_event():
         print("서버 시작 완료: 하이브리드 추천 시스템 준비됨")
     except Exception as e:
         print(f"경고: 하이브리드 모델 로드 실패 - {str(e)}")
-        print("기존 콘텐츠 기반 모델로 폴백합니다.")
-        try:
-            load_recommendation_data()
-            print("서버 시작 완료: 기존 추천 시스템 준비됨")
-        except Exception as e2:
-            print(f"경고: 모든 모델 로드 실패 - {str(e2)}")
-            print("API 호출시 다시 시도됩니다.")
+        print("API 호출시 다시 시도됩니다.")
 
 # 메인 실행부 (개발용)
 if __name__ == "__main__":

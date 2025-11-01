@@ -1,0 +1,22 @@
+{
+  "params": {
+    "mf_factors": 50,
+    "epochs": 30,
+    "batch_size": 512,
+    "top_k": 250,
+    "top_n": 50
+  },
+  "metrics": {
+    "Precision@5": 0.011000000000000001,
+    "Recall@5": 0.009303571428571428,
+    "NDCG@5": 0.012097044787709786,
+    "HitRate@5": 0.05,
+    "Precision@10": 0.014000000000000002,
+    "Recall@10": 0.024633116883116885,
+    "NDCG@10": 0.01913111501577837,
+    "HitRate@10": 0.125,
+    "evaluated_users": 200,
+    "total_users": 200
+  },
+  "composite_score": 0.01913111501577837
+}

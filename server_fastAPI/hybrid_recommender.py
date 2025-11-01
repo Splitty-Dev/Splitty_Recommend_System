@@ -20,18 +20,6 @@ class HybridRecommendationSystem:
     """
     Matrix Factorization과 Two-Tower 모델을 결합한 하이브리드 추천 시스템
     """
-    
-    # 카테고리 매핑 (문자열 -> 인덱스)
-CATEGORY_MAPPING = {
-    "건강/운동": 0,
-    "뷰티/미용": 1, 
-    "생활/주방": 2,
-    "식품": 3,
-    "유아": 4
-}
-
-# 역매핑 (인덱스 -> 카테고리명)
-CATEGORY_NAMES = {v: k for k, v in CATEGORY_MAPPING.items()}
 
 class HybridRecommender:
     def __init__(self, device: str = 'cpu'):
@@ -153,7 +141,7 @@ class HybridRecommender:
         mf_candidates = self.matrix_factorization.get_top_k_candidates(
             user_id=user_id_int,  # 정수로 변환된 user_id 사용
             k=top_k,
-            exclude_seen=True,
+            exclude_purchased=True,  # 구매한 아이템(weight=5)만 제외
             interaction_df=self.train_data,
             category_filter=category_idx_filter,
             available_items=available_items  # 처음부터 available_items로 제한

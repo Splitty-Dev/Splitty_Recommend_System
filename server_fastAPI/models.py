@@ -156,7 +156,7 @@ class ImplicitMatrixFactorization:
         print(f"사용자 수: {n_users}, 아이템 수: {n_items}, Factors: {self.n_factors}")
         
     def get_top_k_candidates(self, user_id: str, k: int = 250, 
-                           exclude_seen: bool = True, 
+                           exclude_purchased: bool = True, 
                            interaction_df: pd.DataFrame = None,
                            category_filter = None,
                            available_items: List[int] = None) -> List[Tuple[str, float]]:
@@ -166,9 +166,10 @@ class ImplicitMatrixFactorization:
         Args:
             user_id: 사용자 ID
             k: 반환할 후보 개수
-            exclude_seen: 이미 상호작용한 아이템 제외 여부
+            exclude_purchased: 이미 구매한 아이템(weight=5) 제외 여부
             interaction_df: 상호작용 데이터프레임
             category_filter: 특정 카테고리 인덱스로 필터링 (옵션, int 또는 None)
+            available_items: 거리 내 사용 가능한 아이템 리스트 (옵션)
         """
         if user_id not in self.user_encoder:
             # 새로운 사용자인 경우 인기 아이템 반환
@@ -201,10 +202,17 @@ class ImplicitMatrixFactorization:
                     encoder_idx = self.item_encoder[item_idx]
                     scores[encoder_idx] = np.dot(user_vector, self.item_factors[encoder_idx])
         
-        # 이미 상호작용한 아이템 제외
-        if exclude_seen and interaction_df is not None:
-            seen_items = set(interaction_df[interaction_df['user_idx'] == user_id]['item_idx'].values)
-            for item_id in seen_items:
+        # 이미 구매한 아이템만 제외 (weight=5인 경우만)
+        if exclude_purchased and interaction_df is not None:
+            # weight=5인 구매 아이템만 필터링
+            purchased_items = set(
+                interaction_df[
+                    (interaction_df['user_idx'] == user_id) & 
+                    (interaction_df['weight'] == 5)
+                ]['item_idx'].values
+            )
+            
+            for item_id in purchased_items:
                 if item_id in self.item_encoder:
                     item_idx = self.item_encoder[item_id]
                     scores[item_idx] = -np.inf
