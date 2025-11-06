@@ -354,7 +354,3 @@ class HybridRecommender:
             stats["mf_items"] = len(self.matrix_factorization.item_encoder)
         
         return stats
-    
-    def _get_category_name(self, category_idx: int) -> str:
-        """카테고리 인덱스를 카테고리 명으로 변환"""
-        return CATEGORY_NAMES.get(category_idx, "Unknown")
